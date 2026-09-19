@@ -1,7 +1,6 @@
 # %%
 import torch
 import torch.nn as nn
-import torchvision
 from torch.utils.data import DataLoader,Dataset
 device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # device=torch.device('cpu')
@@ -13,13 +12,15 @@ import sys
 if 'ipykernel' in sys.argv[0]:
     EPOCHS=1
     BATCH_SIZE=64
+    Dataset_dir='../data/vqav2-small'
 else:
     arg_len=len(sys.argv)
-    if arg_len!=3:
-        print('should be [epochs] [batch_size]')
+    if arg_len!=4:
+        print('should be [epochs] [batch_size] [Dataset_dir]')
         sys.exit()
     EPOCHS=int(sys.argv[1])
     BATCH_SIZE=int(sys.argv[2])
+    Dataset_dir=str(sys.argv[3])
 
 # %%
 from transformers import AutoTokenizer,AutoModelForCausalLM
@@ -47,7 +48,7 @@ outputs.last_hidden_state.shape
 # %%
 from datasets import load_dataset
 caption_dataset=load_dataset('jxie/flickr8k')['train']
-v_dataset=load_dataset('../data/vqav2-small')['validation']
+v_dataset=load_dataset(Dataset_dir)['validation']
 caption_test_dataset=load_dataset('jxie/flickr8k')['test']
 split=v_dataset.train_test_split(test_size=0.2,seed=42)
 vqa_dataset=split['train']
