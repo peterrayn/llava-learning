@@ -1,7 +1,9 @@
 # %%
+# python [epochs] [batch_size] [Dataset_dir]
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader,Dataset
+from pathlib import Path
 device=torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # device=torch.device('cpu')
 torch.manual_seed(123)
@@ -11,8 +13,8 @@ print(torch.cuda.get_device_name(0))
 import sys
 if 'ipykernel' in sys.argv[0]:
     EPOCHS=1
-    BATCH_SIZE=64
-    Dataset_dir='../data/vqav2-small'
+    BATCH_SIZE=256
+    Dataset_dir='/data/hujun'
 else:
     arg_len=len(sys.argv)
     if arg_len!=4:
@@ -21,6 +23,9 @@ else:
     EPOCHS=int(sys.argv[1])
     BATCH_SIZE=int(sys.argv[2])
     Dataset_dir=str(sys.argv[3])
+    if not Path(Dataset_dir).is_dir():
+        print('worng dir: ',Dataset_dir)
+        sys.exit()
 
 # %%
 from transformers import AutoTokenizer,AutoModelForCausalLM
@@ -47,9 +52,9 @@ outputs.last_hidden_state.shape
 
 # %%
 from datasets import load_dataset
-caption_dataset=load_dataset('jxie/flickr8k')['train']
-v_dataset=load_dataset(Dataset_dir)['validation']
-caption_test_dataset=load_dataset('jxie/flickr8k')['test']
+caption_dataset=load_dataset(Dataset_dir+'/flickr8k')['train']
+v_dataset=load_dataset(Dataset_dir+'/vqav2-small')['validation']
+caption_test_dataset=load_dataset(Dataset_dir+'/flickr8k')['test']
 split=v_dataset.train_test_split(test_size=0.2,seed=42)
 vqa_dataset=split['train']
 vqa_test_dataset=split['test']
@@ -150,8 +155,7 @@ class Llava(nn.Module):
         combind_embed=torch.concatenate([img_embed,text_embed],dim=1)
         out=self.gpt2(inputs_embeds=combind_embed).logits
         return out
-model=Llava().to(device)
-torch.save(model.state_dict(),'model_notrain.ckpt')
+
 
 # %%
 # show the stupid effect
@@ -159,11 +163,8 @@ torch.save(model.state_dict(),'model_notrain.ckpt')
 def see_effect(image,model,length=50,prompt='Describe the image:'):
 # image = Image.open('./kitty.jpg')
     plt.imshow(image)
-    plt.show()
     input_img = processor(images=image, return_tensors="pt").pixel_values.to(device)
     input_text=tokenizer.encode(prompt,return_tensors='pt').to(device)
-    print(input_text)
-    print(tokenizer.decode(input_text))
     model.eval()
     with torch.no_grad():
         for i in range(length):
@@ -172,11 +173,10 @@ def see_effect(image,model,length=50,prompt='Describe the image:'):
             input_text=torch.concatenate([input_text,predict_token],dim=-1)
             if predict_token==tokenizer.eos_token_id:
                 break
-    print(input_text)
     print(tokenizer.decode(input_text))
 
 # %%
-def train(model,dataloader,optimizer,epochs):
+def train(model,dataloader,optimizer,epochs,criterion):
     L=[]
     for epoch in range(epochs):
         for i,(img,in_text,out_text) in enumerate(dataloader):
@@ -195,45 +195,64 @@ def train(model,dataloader,optimizer,epochs):
 
 # %%
 # stage 1
-for para in model.vision_encoder.parameters():
-    para.requires_grad=False
-for para in model.gpt2.parameters():
-    para.requires_grad=False
-criterion=nn.CrossEntropyLoss()
-optimizer1=torch.optim.AdamW(model.projector.parameters(),lr=0.001)
-model.eval()
-model.projector.train()
-stage1_loss=train(model=model,dataloader=caption_dataloader,optimizer=optimizer1,epochs=EPOCHS)
-torch.save(model.state_dict(),'model_stage1.ckpt')
-
-# %%
-plt.plot(stage1_loss)
-plt.show()
+def stage1(model):
+    print("=========stage1========")
+    for para in model.vision_encoder.parameters():
+        para.requires_grad=False
+    for para in model.gpt2.parameters():
+        para.requires_grad=False
+    criterion=nn.CrossEntropyLoss()
+    optimizer1=torch.optim.AdamW(model.projector.parameters(),lr=0.001)
+    model.eval()
+    model.projector.train()
+    stage1_loss=train(model=model,dataloader=caption_dataloader,optimizer=optimizer1,epochs=EPOCHS,criterion=criterion)
+    return stage1_loss
 
 # %%
 # stage 2
-for para in model.vision_encoder.parameters():
-    para.requires_grad=False
-for para in model.gpt2.parameters():
-    para.requires_grad=True
-criterion=nn.CrossEntropyLoss()
-optimizer2 = torch.optim.AdamW([
-    {"params": model.projector.parameters(), "lr": 1e-4},
-    {"params": model.gpt2.parameters(), "lr": 1e-5},
-])
-model.eval()
-model.projector.train()
-model.gpt2.train()
-stage2_loss=train(model=model,dataloader=vqa_dataloader,optimizer=optimizer2,epochs=EPOCHS)
-torch.save(model.state_dict(),'model_stage2.ckpt')
+def stage2(model):
+    print("=========stage2========")
+    for para in model.vision_encoder.parameters():
+        para.requires_grad=False
+    for para in model.gpt2.parameters():
+        para.requires_grad=True
+    criterion=nn.CrossEntropyLoss()
+    optimizer2 = torch.optim.AdamW([
+        {"params": model.projector.parameters(), "lr": 1e-4},
+        {"params": model.gpt2.parameters(), "lr": 1e-5},
+    ])
+    model.eval()
+    model.projector.train()
+    model.gpt2.train()
+    stage2_loss=train(model=model,dataloader=vqa_dataloader,optimizer=optimizer2,epochs=EPOCHS,criterion=criterion)
+    return stage2_loss
 
 # %%
-model0,model1,model2=Llava(),Llava(),Llava()
-model0.load_state_dict(torch.load('model_notrain.ckpt'))
-model1.load_state_dict(torch.load('model_stage1.ckpt'))
-model2.load_state_dict(torch.load('model_stage2.ckpt'))
+# start experiment
+###
+# model0,model1,model2,model3
+# 
+# 
+###
+
+model0,model1,model2,model3=Llava().to(device),Llava().to(device),Llava().to(device),Llava().to(device)
+model1.load_state_dict(model0.state_dict())
+model2.load_state_dict(model0.state_dict())
+torch.save({'state_dict':model0.state_dict(),'loss':[]},'model_notrain.ckpt')
+model1_loss=stage1(model1)
+torch.save({'state_dict':model1.state_dict(),'loss':model1_loss},'model_stage1.ckpt')
+model2_loss=stage2(model2)
+torch.save({'state_dict':model2.state_dict(),'loss':model2_loss},'model_stage2.ckpt')
+model3.load_state_dict(model1.state_dict())
+model3_loss=stage2(model3)
+torch.save({'state_dict':model3.state_dict(),'loss':model3_loss},'model_stage12.ckpt')
 
 # %%
-see_effect(vqa_test_dataset[33]['image'],prompt='What is it?',model=model1)
+img=Image.open('./kitty.jpg')
+prompt='What is it? cat. How many? 2. What is the color of the cat?'
+print('Question: ',prompt)
+see_effect(img,prompt=prompt,model=model0)
+see_effect(img,prompt=prompt,model=model1)
+see_effect(img,prompt=prompt,model=model2)
 
 
